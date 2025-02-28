@@ -201,67 +201,23 @@ class RayWorker(BaseWorker):
             outputs = self.model(**inputs)
             return outputs.logits
         
-    def send_weights(self):
-        raise NotImplementedError("Not implemented")
+    def collect_weights(self):
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType, FullStateDictConfig
+        cfg = FullStateDictConfig(offload_to_cpu=False, rank0_only=True)
+        with FSDP.state_dict_type(self.model, StateDictType.FULL_STATE_DICT, cfg):
+            self.full_state_dict = self.model.state_dict()
+
+    def send_weights(self, x):
+        for key, weight in self.full_state_dict.items():
+            assert weight.device.index == self.rank
+        breakpoint()
+        return self.full_state_dict
     
-    def recv_weights(self, tensors):
+    def recv_weights(self, state_dict):
         """simulate recv weights with receiving forward activations"""
-        return tensors.size()
-
-
-# TODO(anm): need to adapt this to HF transformers
-def parallelize_transformer(transformer, tp_mesh):
-    for _, transformer_block in enumerate(transformer.resblocks):
-        layer_tp_plan = {
-            # "ln_1": SequenceParallel(),
-            # "attn": PrepareModuleInput(
-            #     input_layouts=(Shard(1), None),
-            #     desired_input_layouts=(Replicate(), None),
-            # ),
-            # "attn.in_proj_weight": ColwiseParallel(),
-            # "attn.out_proj": RowwiseParallel(output_layouts=Shard(1)),
-            # "attn.out_proj": RowwiseParallel(),
-            # "ln_2": SequenceParallel(),
-            # "mlp": PrepareModuleInput(
-            #     input_layouts=(Shard(1),),
-            #     desired_input_layouts=(Replicate(),),
-            # ),
-            "mlp.c_fc": ColwiseParallel(),
-            # "mlp.c_proj": RowwiseParallel(output_layouts=Shard(1)),
-            "mlp.c_proj": RowwiseParallel(),
-        }
-
-        # # Adjust attention module to use the local number of heads
-        # attn_layer = transformer_block.attn
-        # attn_layer.num_heads = attn_layer.num_heads // tp_mesh.size()
-
-        # Custom parallelization plan for the model
-        parallelize_module(
-            module=transformer_block,
-            device_mesh=tp_mesh,
-            parallelize_plan=layer_tp_plan,
-        )
-    return transformer
-
-
-def parallelize_tp(model, tp_mesh):
-    """
-    Imitate the example in https://github.com/pytorch/examples/blob/main/distributed/tensor_parallelism/fsdp_tp_example.py
-    """
-    model = parallelize_module(
-        model,
-        tp_mesh,
-        {
-            "token_embedding": RowwiseParallel(
-                input_layouts=Replicate(),
-            ),
-        },
-    )
-    parallelize_transformer(model, tp_mesh)
-
-    model.to("cuda")
-    return model
-
+        for key, weight in state_dict.items():
+            assert weight.device.index == self.rank
+        print("yay!")
 
 def parallelize_dp(model, dp_mesh):
     model.to(torch.cuda.current_device())

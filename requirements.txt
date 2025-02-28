@@ -1,0 +1,4 @@
+torch==2.5.1
+hf_transfer
+fire
+transformers==4.48.0
