@@ -43,11 +43,15 @@ def main(
     with InputNode() as input_node:
         weights = group_1_workers[0].send_weights.bind(input_node).with_tensor_transport("nccl")        
 
+        # multioutput node + async def in worker breaks!
         group_2_outputs = [
             group_2_workers[i].recv_weights.bind(weights)
             for i in range(dp_size_2)
         ]
         sync_param_dag = MultiOutputNode(group_2_outputs)
+
+        # just a single worker works here even with async!!!!
+        #  sync_param_dag = group_2_workers[0].recv_weights.bind(weights)
     sync_param_dag = sync_param_dag.experimental_compile(_submit_timeout=5000)
     ray.get(sync_param_dag.execute(1))
     
