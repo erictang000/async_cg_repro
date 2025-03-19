@@ -11,28 +11,16 @@ import logging
 from ray_workers import initialize_dist_group, RayWorker
 
 
-def get_logger():
-    """Create and return a configured logger."""
-    logging.basicConfig(
-        format="%(asctime)s %(message)s",
-        datefmt="%Y-%m-%d,%H:%M:%S",
-        level=logging.INFO,
-    )
-    return logging.getLogger(__name__)
-
-
 def main(
     model_name: str = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
     dp_size_1: int = 2,
-    tp_size_1: int = 1,
     dp_size_2: int = 2,
-    tp_size_2: int = 1,
     batch_size: int = 16,
 ):
     # Initialize worker groups
     group_1_workers = [
         RayWorker.options(accelerator_type=NVIDIA_A100).remote(
-            model_name, dp_size_1, tp_size_1
+            model_name, dp_size_1
         )
         for _ in range(dp_size_1)
     ]
@@ -41,7 +29,7 @@ def main(
 
     group_2_workers = [
         RayWorker.options(accelerator_type=NVIDIA_A100).remote(
-            model_name, dp_size_2, tp_size_2
+            model_name, dp_size_2
         )
         for _ in range(dp_size_2)
     ]

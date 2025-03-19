@@ -124,12 +124,11 @@ class BaseWorker:
 
 @ray.remote(num_gpus=1)
 class RayWorker(BaseWorker):
-    def __init__(self, model_name, dp_size, tp_size) -> None:
+    def __init__(self, model_name, dp_size) -> None:
         super().__init__()
         self.model_name = model_name
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         self.dp_size = dp_size
-        self.tp_size = tp_size
 
         self.logger = get_logger()
 
@@ -148,69 +147,45 @@ class RayWorker(BaseWorker):
 
         self.world_size = int(os.environ["LOCAL_WORLD_SIZE"])
         assert (
-            self.world_size == self.tp_size * self.dp_size
-        ), "world size must be equal to tp size * dp size"
+            self.world_size == self.dp_size
+        ), "world size must be equal to dp size"
 
         if self.world_size > 1:
             self.device_mesh = init_device_mesh(
                 device_type="cuda",
-                mesh_shape=(self.dp_size, self.tp_size),
-                mesh_dim_names=("dp", "tp"),
+                mesh_shape=(self.dp_size,),
+                mesh_dim_names=("dp",),
             )
 
-            self.tp_rank = self.device_mesh["tp"].get_local_rank()
             self.dp_rank = self.device_mesh["dp"].get_local_rank()
-            
-            if self.dp_size == 1:
-                rank_log(self.dp_rank, self.tp_rank, f"using TP", self.logger)
-                self.model = parallelize_tp(self.model, self.device_mesh["tp"])
-            else:
-                rank_log(self.dp_rank, self.tp_rank, f"using FSDP", self.logger)
-                self.model = parallelize_dp(self.model, self.device_mesh["dp"])
-
+    
+            rank_log(self.dp_rank, f"using FSDP", self.logger)
+            self.model = parallelize_dp(self.model, self.device_mesh["dp"])
         else:
             self.model.to("cuda")
             self.device_mesh = None
-            self.tp_rank = 0
             self.dp_rank = 0
 
     def get_rank(self):
-        return self.dp_rank, self.tp_rank
+        return self.dp_rank
+    
+    async def test_async(self):
+        print(f"role {self.role} rank {self.rank} testing async")
+        await asyncio.sleep(2)
+        print(f"role {self.role} rank {self.rank} done testing async")
 
-    def forward(self, batch):
-        """
-        Forward pass through the model
-        Args:
-            batch: List of text inputs
-        Returns:
-            logits from the model
-        """
-        # Tokenize inputs
-        inputs = self.tokenizer(
-            batch,
-            padding=True,
-            truncation=True,
-            max_length=512,
-            return_tensors="pt"
-        )
-        
-        # Move inputs to GPU
-        inputs = {k: v.cuda() for k, v in inputs.items()}
-        # Get logits
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-            return outputs.logits
-        
     def collect_weights(self):
-        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType, FullStateDictConfig
-        cfg = FullStateDictConfig(offload_to_cpu=False, rank0_only=True)
-        with FSDP.state_dict_type(self.model, StateDictType.FULL_STATE_DICT, cfg):
+        if self.world_size > 1:
+            from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType, FullStateDictConfig
+            cfg = FullStateDictConfig(offload_to_cpu=False, rank0_only=True)
+            with FSDP.state_dict_type(self.model, StateDictType.FULL_STATE_DICT, cfg):
+                self.full_state_dict = self.model.state_dict()
+        else:
             self.full_state_dict = self.model.state_dict()
 
     def send_weights(self, x):
         for key, weight in self.full_state_dict.items():
             assert weight.device.index == self.rank
-        breakpoint()
         return self.full_state_dict
     
     def recv_weights(self, state_dict):
@@ -229,27 +204,6 @@ def parallelize_dp(model, dp_mesh):
     return model
 
 
-def rank_log(dp_rank, tp_rank, msg, logger):
+def rank_log(dp_rank, msg, logger):
     """helper function to log only on all ranks"""
-    logger.info(f"[dp{dp_rank}-tp{tp_rank}] {msg}")
-
-
-def parallelize_2d(model, dp_size, tp_size, logger=None):
-    assert dp_size * tp_size > 1, "DP or TP must be greater than 1!"
-
-    device_mesh = init_device_mesh(
-        device_type="cuda",
-        mesh_shape=(dp_size, tp_size),
-        mesh_dim_names=("dp", "tp"),
-    )
-    dp_rank = device_mesh["dp"].get_local_rank()
-    tp_rank = device_mesh["tp"].get_local_rank()
-
-    if dp_size == 1:
-        rank_log(dp_rank, tp_rank, f"using TP", logger)
-        model = parallelize_tp(model, device_mesh["tp"])
-    else:
-        rank_log(dp_rank, tp_rank, f"using FSDP", logger)
-        model = parallelize_dp(model, device_mesh["dp"])
-
-    return model, device_mesh
+    logger.info(f"[dp{dp_rank}] {msg}")

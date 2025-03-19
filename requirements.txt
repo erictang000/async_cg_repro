@@ -2,3 +2,4 @@ torch==2.5.1
 hf_transfer
 fire
 transformers==4.48.0
+torchvision==0.20.1
